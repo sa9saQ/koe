@@ -1,0 +1,192 @@
+# koe - Project Rules
+
+グローバル `~/.claude/CLAUDE.md` を継承する。本ファイルは **koe 固有** のみ記述する（重複ルールは書かない）。
+
+## Project Overview
+- **What**: 起動しっぱなしのリアルタイム音声 AI 秘書（デスクトップアプリ）。GPT-Realtime-2 で人と話すように連続会話しながら、裏で PC 操作 / Web 検索 / 記録を実行し、AI が今何をしているかを画面で可視化する
+- **Stack**: Tauri 2 + React 19 + TypeScript + Rust + OpenAI Realtime-2 (WebSocket BYOK)
+- **Languages**: TypeScript (frontend) + Rust (backend)
+- **収益モデル**: M1 = BYOK 単独。M4 で 2 モード提供（ユーザー選択）:
+  - **モード A**: BYOK + アプリ本体有料化（買い切り or ソフト月額。技術層向け、運営コストゼロ）
+  - **モード B**: 運営キー + 従量課金プリペイドクレジット（Stripe meter、マス層向け、与信リスクなし）
+  - 接続層を `RealtimeAuth` enum (`Byok` / `ManagedCredit`) で抽象化
+  - **月額固定サブスクは採用しない**（音声 API コスト構造で赤字確定のため）
+- **対象 OS**: M1 = Windows のみ、M3 で Mac 追加
+- **重要な開発環境制約**: WSL ではマイク（cpal）が動作不可。コード作成・cargo test（純粋ロジック）は WSL で OK、音声/E2E は **ネイティブ Windows 必須**
+
+## Plan Reference (SoT)
+- 全体設計・マイルストーン・差別化: `~/.claude/plans/virtual-riding-hearth.md`
+- 実装着手前は必ずプランを参照する。プランがこのプロジェクトの真実の源
+
+## Architecture
+
+```
+WebView (React)         Tauri IPC          Rust backend                OpenAI
+─────────────────  ◄──invoke()──►   ─────────────────────   ──WSS───►   GPT-Realtime-2
+VoiceButton             emit/listen       session_manager
+ActivityLog ★            tool-event       audio_bridge (cpal)
+ApprovalModal           approval-req      tool_dispatcher
+SettingsPanel                              cost_tracker ★
+                                          approval_gate
+                                          secret_store (stronghold)
+```
+
+- **会話**: GPT-Realtime-2 へ WebSocket 直接接続（BYOK。ephemeral key 方式は採用しない、ローカルにキーがあるため不要）
+- **マイク**: **Rust 側 cpal** で取得（WebView の getUserMedia / CSP / AudioWorklet 複雑性を回避）。音声再生は rodio
+- **tool 実行**: async tokio task で並行（会話ストリームを止めずに裏作業）
+- **可視化**: `app.emit("tool-event", payload)` → frontend `listen()`。Enitar の export-progress と同一構造
+- **記録**: `RecorderAdapter` trait で差し替え可能（M1=SQLite, M2=Obsidian, M3=Notion）
+
+## Directory Structure
+
+```
+src/
+  features/
+    session/    VoiceButton, SessionStatus, sessionStore
+    activity/   ActivityLog, CurrentAction, ApprovalModal, activityStore  ★最重要差別化
+    settings/   ApiKeyInput, AdapterSelector, settingsStore
+  lib/tauri/ipc.ts   invoke/listen の type-safe wrapper
+src-tauri/src/
+  lib.rs              Tauri builder + plugin 登録 + SQL migration
+  session_manager.rs  WebSocket / Realtime-2 接続、セッション開始/停止
+  audio_bridge.rs     cpal マイク → PCM → WS / 音声受信 → rodio 再生
+  tool_dispatcher.rs  function_call ルーティング、async tokio task
+  approval_gate.rs    DANGER 操作の人間承認 (oneshot 30s timeout, fail-closed)
+  cost_tracker.rs     月次予算ハードキャップ ★ 実装済 (14 tests, R-C round 2 通過)
+  secret_store.rs     tauri-plugin-stronghold ラッパー（BYOK 用、Enitar 未採用の新規）
+  validation.rs       Path traversal 防止（Enitar 流用）+ computer_use 拡張
+  observability.rs    Sentry 3 レイヤー（M2）
+  tools/    web_search / file_ops / computer_use / recorder
+  storage/  adapter.rs (trait) + sqlite.rs (デフォルト)
+```
+
+## Project-Specific Rules
+
+### Tauri / Rust 規約
+- Tauri commands は `Result<T, String>` 統一（Rust エラーを String 化、frontend で扱いやすく）
+- 進捗・イベント push は `app.emit("event-name", payload)` + frontend `listen()`（**Enitar `export.rs` と同パターン**、可視化の背骨）
+- Path 操作は必ず `validation.rs` を通す（path traversal 防止、Enitar 流用）
+- セキュリティ機能は **fail-closed**: 不明 / エラー / オーバーフロー / タイムアウト時は安全側（= 制限する側）に倒す
+
+### BYOK / シークレット管理（最重要）
+- **OpenAI API キーは Rust 側（`tauri-plugin-stronghold` 暗号化保管庫）のみ保持。WebView には絶対に露出させない**
+- WebSocket 接続は Rust backend が `Authorization: Bearer <key>` で OpenAI に直接張る
+- frontend からは「セッション開始/停止」「使用額取得」等の高レベル invoke だけ。生キーは絶対に往復しない
+- ログ / panic message / Tauri event payload にキー値が出ないか PR ごとに確認
+
+### コスト保護の不変条件 (`cost_tracker.rs`、変更時はテスト必須)
+- **金額は u64 nanodollars（1 USD = 1e9）** で扱う。f64 は表示のみ
+- 累計は `saturating_add` / `saturating_mul`（オーバーフロー時は上限張り付き = fail-closed）
+- 月リセットは `month > current_month` かつ妥当な YYYYMM の時のみ（過去月 / 0 / 13 月でリセットしない）
+- `BudgetConfig::enabled = false` は「ユーザーが明示的に無制限を選んだ」状態。**初回オンボーディングで「上限設定」 or 「明示的に無制限」の必須選択を設けること（settings UI 層の責務）**
+- session_manager は **usage 受信ごとに `is_over_budget()` を確認**し、超過したら進行中セッションを即停止（cost_tracker の R-C round 2 で確認済の他層責務）
+
+### PC 操作の安全ゲート（3 段、fail-closed）
+| 危険度 | 操作 | フロー |
+|---|---|---|
+| SAFE | web_search / read_file (allowlist) / take_screenshot / write_note | 即実行 |
+| CAUTION | write_file / open_url / open_app | 実行前通知 |
+| DANGER | run_command / delete_file / external_upload | `app.emit("tool-approval-required")` → ApprovalModal → 人間承認（oneshot 30s timeout）→ 拒否なら `"user declined"` を Realtime-2 に返す |
+
+- 書き込み許可ディレクトリ: Documents / Desktop 配下のみ
+- シェル: DENY_LIST (rm/del/format/curl/wget/powershell -enc) を先に判定、その後 ALLOW_LIST ホワイトリスト
+
+### Realtime-2 接続
+- エンドポイント: `wss://api.openai.com/v1/realtime`（WebSocket 永続接続）
+- function calling は side channel イベント (`response.function_call_arguments.done`)
+- tool 実行完了後 `conversation.item.create` で結果を返し `response.create` で次応答を促す
+- セッションタイムアウト既定 30 分（コスト保護の補助）
+
+### CSP (tauri.conf.json)
+- `connect-src` に追加必須: `wss://api.openai.com`、`https://api.openai.com`、`https://api.bing.microsoft.com`（M1）、後続でツール用 API ホストを追加
+
+## Reusable Patterns from Enitar
+Enitar (`/home/zsaku/projects/Enitar/`) は同ユーザーの確立済 Tauri+React プロジェクト。以下を直接流用:
+
+| Pattern | Enitar source | koe 使い先 |
+|---|---|---|
+| emit/listen progress | `src-tauri/src/export.rs` + `src/features/export/services/export.ts` | activity の tool-event ライブ表示 |
+| path traversal 防止 | `src-tauri/src/validation.rs` | approval_gate / file_ops / computer_use |
+| Tauri builder + SQL migration | `src-tauri/src/lib.rs` | 同パターン + stronghold プラグイン追加 |
+| Sentry 3 レイヤー + PII redaction | `src/lib/observability/sentry.ts` 他 | M2 で導入 |
+
+**Enitar との方針差**: API キー管理。Enitar はサーバー集約（Supabase Edge Function）で BYOK 無し。koe は BYOK 必須なので tauri-plugin-stronghold を新規採用（Enitar には無い）。
+
+## Testing
+- Rust: `cargo test --manifest-path src-tauri/Cargo.toml`（WSL 可、純粋ロジックの単体テスト）
+- Frontend: M1 で Vitest 追加予定（まだ未導入）
+- E2E: ネイティブ Windows で `pnpm tauri dev`（音声・WebSocket 込み）
+- TDD: 実装ファイル新規作成時は `#[cfg(test)] mod tests` を同ファイルに同梱
+
+## Build & Deploy
+- Dev: `pnpm tauri dev`（ネイティブ Windows）
+- Build: `pnpm tauri build`（Windows / Mac）
+- 配布: M4 で `tauri-plugin-updater` + GitHub Releases + pubkey 署名
+
+## Environment Variables
+M1 では `.env` 不使用。API キーはユーザーがアプリ UI で入力 → stronghold へ保管（BYOK 製品方針）。
+
+| Variable | Purpose | Required |
+|---|---|---|
+| （該当なし、M1） | — | — |
+
+## Branches / Milestones
+- `main`: scaffold + project-init 完了状態
+- `feat/cost-tracker`: 月次予算ハードキャップ（14 tests passing、R-C round 2 通過、main マージ待ち）
+- 次に切る予定: `feat/session-manager`（M1 中核、WebSocket + Realtime-2）
+
+詳細マイルストーンは `~/.claude/plans/virtual-riding-hearth.md` 参照。
+
+## Task Routing for koe
+- **Frontend (React features)**: Claude 直
+- **コア（session_manager / audio_bridge / tool_dispatcher / approval_gate / secret_store / cost_tracker）**: Hybrid（Claude write → Codex adversarial review、課金・セキュリティ近接のため）
+- **autonomous batch（tools 実装・テスト追加）**: Codex MCP 委譲も可
+
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+
+## Session Completion
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
+<!-- END BEADS INTEGRATION -->
