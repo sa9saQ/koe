@@ -52,12 +52,18 @@ pub mod pricing {
 }
 
 /// USD を nanodollars に変換（UI 入力用）。
-/// 非有限（NaN/Inf）・負値は `None`（不正値を u64 に通さない fail-closed）。
+/// 非有限（NaN/Inf）・負値・u64 オーバーフロー（巨大値が `u64::MAX` に丸め込まれて
+/// 実質無制限化するのを防ぐ）は `None`（不正値を u64 に通さない fail-closed）。
 pub fn usd_to_nanodollars(usd: f64) -> Option<u64> {
     if !usd.is_finite() || usd < 0.0 {
         return None;
     }
-    Some((usd * NANODOLLARS_PER_USD as f64).round() as u64)
+    let nano = usd * NANODOLLARS_PER_USD as f64;
+    // u64::MAX ≈ 1.8e19 nano = $1.8e10。それを超える USD は不正入力扱い。
+    if nano > u64::MAX as f64 {
+        return None;
+    }
+    Some(nano.round() as u64)
 }
 
 /// nanodollars を表示用 USD に変換（表示のみ。判定・比較には使わない）。
@@ -245,6 +251,16 @@ mod tests {
         assert_eq!(usd_to_nanodollars(f64::INFINITY), None);
         assert_eq!(usd_to_nanodollars(-1.0), None);
         assert_eq!(usd_to_nanodollars(10.0), Some(10 * USD));
+    }
+
+    #[test]
+    fn usd_conversion_rejects_overflow() {
+        // R-C round 2: 巨大有限値が `u64::MAX` に丸め込まれて実質無制限化するのを防ぐ。
+        assert_eq!(usd_to_nanodollars(1.0e20), None);
+        assert_eq!(usd_to_nanodollars(1.0e30), None);
+        assert_eq!(usd_to_nanodollars(f64::MAX), None);
+        // 実用範囲（数百〜数百万 USD）は通る。
+        assert_eq!(usd_to_nanodollars(1_000_000.0), Some(1_000_000 * USD));
     }
 
     #[test]
