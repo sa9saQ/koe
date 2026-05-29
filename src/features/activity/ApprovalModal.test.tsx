@@ -73,14 +73,18 @@ describe("ApprovalModal", () => {
     expect(screen.getByText(/他に 1 件/)).toBeInTheDocument();
   });
 
-  it("keeps the modal open and shows an error when the IPC fails (not dequeued)", async () => {
-    resolveToolApproval.mockRejectedValueOnce(new Error("ipc down"));
+  it("keeps the modal open and shows a fixed (non-leaking) error when the IPC fails", async () => {
+    // The raw backend error could carry a path/key/PII — it must NOT be shown.
+    resolveToolApproval.mockRejectedValueOnce(new Error("/secret/path leaked sk-123"));
     render(<ApprovalModal />);
     act(() => useActivityStore.getState().enqueueApproval(approval({ approvalId: "a1" })));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /許可/ }));
     });
-    expect(screen.getByRole("alert")).toHaveTextContent("ipc down");
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("承認の送信に失敗しました");
+    expect(alert).not.toHaveTextContent("sk-123"); // raw error not leaked
+    expect(alert).not.toHaveTextContent("/secret/path");
     expect(screen.getByText("delete a file")).toBeInTheDocument(); // still open
     expect(useActivityStore.getState().approvalQueue).toHaveLength(1); // not dequeued
   });

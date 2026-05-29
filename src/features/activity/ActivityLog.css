@@ -22,7 +22,7 @@
   height: 11px;
   border-radius: 999px;
   background: var(--tone-idle);
-  box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, currentcolor 18%, transparent);
 }
 .koe-tone-idle {
   color: var(--tone-idle);

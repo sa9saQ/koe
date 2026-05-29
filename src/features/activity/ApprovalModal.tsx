@@ -61,21 +61,23 @@ export function ApprovalModal() {
     const { approvalId } = current;
     inFlight.current = true;
     setBusy(true);
-    let failure: string | null = null;
+    let failed = false;
     try {
       await resolveToolApproval(approvalId, decision);
-    } catch (err) {
-      failure = err instanceof Error ? err.message : String(err);
+    } catch {
+      // Do NOT surface the raw backend error: it may carry a path / key / PII.
+      // Show a fixed message; the backend's own 30s timeout is the safety net.
+      failed = true;
     } finally {
       inFlight.current = false;
       setBusy(false);
-      if (failure) {
+      if (failed) {
         // Keep the modal open so the user can retry; do NOT dequeue. Only show
         // the error if this request is still the head (it may have been
         // auto-dismissed on deadline while the IPC was in flight).
         const stillHead = useActivityStore.getState().approvalQueue[0]?.approvalId === approvalId;
         if (stillHead) {
-          setIpcError(failure);
+          setIpcError("承認の送信に失敗しました。もう一度お試しください。");
         }
       } else {
         dequeueApproval(approvalId);
@@ -98,7 +100,7 @@ export function ApprovalModal() {
 
         {ipcError && (
           <p className="koe-approval-error" role="alert">
-            送信に失敗しました: {ipcError} — もう一度お試しください
+            {ipcError}
           </p>
         )}
 
