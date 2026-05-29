@@ -70,8 +70,13 @@ export function ApprovalModal() {
       inFlight.current = false;
       setBusy(false);
       if (failure) {
-        // Keep the modal open so the user can retry; do NOT dequeue.
-        setIpcError(failure);
+        // Keep the modal open so the user can retry; do NOT dequeue. Only show
+        // the error if this request is still the head (it may have been
+        // auto-dismissed on deadline while the IPC was in flight).
+        const stillHead = useActivityStore.getState().approvalQueue[0]?.approvalId === approvalId;
+        if (stillHead) {
+          setIpcError(failure);
+        }
       } else {
         dequeueApproval(approvalId);
       }

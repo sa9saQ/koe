@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   EVENT_CAP,
+  MAX_ACTIONS,
   selectActiveActions,
   selectDisplayStatus,
   useActivityStore,
@@ -148,6 +149,19 @@ describe("ingestToolEvent — action folding", () => {
     expect(useActivityStore.getState().actions.has("live")).toBe(true);
     expect(selectActiveActions(useActivityStore.getState())).toHaveLength(1);
   });
+
+  it("caps the action map even when a backend only emits start events", () => {
+    const s = useActivityStore.getState();
+    const total = MAX_ACTIONS + 50;
+    for (let i = 1; i <= total; i++) {
+      s.ingestToolEvent(ev({ eventId: `e${i}`, actionId: `a${i}`, sequence: i, phase: "start" }));
+    }
+    const actions = useActivityStore.getState().actions;
+    expect(actions.size).toBeLessThanOrEqual(MAX_ACTIONS);
+    // The most recent action survives; the oldest is evicted.
+    expect(actions.has(`a${total}`)).toBe(true);
+    expect(actions.has("a1")).toBe(false);
+  });
 });
 
 describe("selectDisplayStatus — derived state machine", () => {
@@ -194,6 +208,11 @@ describe("selectDisplayStatus — derived state machine", () => {
     useActivityStore.getState().setSessionStatus({ state: "connected", sequence: 9 });
     expect(selectDisplayStatus(useActivityStore.getState())).toBe("error");
     expect(useActivityStore.getState().lastError).toBe("down");
+  });
+
+  it("accepts a first status event with sequence 0 (0-based backend)", () => {
+    useActivityStore.getState().setSessionStatus({ state: "connected", sequence: 0 });
+    expect(useActivityStore.getState().connState).toBe("connected");
   });
 });
 

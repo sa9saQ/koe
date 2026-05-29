@@ -26,6 +26,15 @@ import type {
 /** Max number of tool events retained in the visible log. */
 export const EVENT_CAP = 100;
 
+/**
+ * Hard cap on the action map. Completed actions prune out via the event window,
+ * but *active* ones are kept even off-window — so a broken/malicious backend
+ * that emits `start` without ever sending `done`/`error` could grow the map
+ * without limit. This cap evicts the oldest actions as a backstop. Set well
+ * above any realistic concurrent-tool count.
+ */
+export const MAX_ACTIONS = 256;
+
 interface ActivityState {
   connState: SessionConnState;
   /** Sticky error message; cleared when a *newer* non-error status arrives. */
@@ -67,7 +76,8 @@ function initialState() {
     actions: new Map<string, ActionState>(),
     approvalQueue: [] as ApprovalRequest[],
     lastSequence: 0,
-    lastSessionSequence: 0,
+    // -1 so a backend whose status sequence starts at 0 is not ignored.
+    lastSessionSequence: -1,
   };
 }
 
@@ -136,6 +146,17 @@ export const useActivityStore = create<ActivityState>((set) => ({
       for (const [id, action] of actions) {
         if (!isActivePhase(action.phase) && !retainedActionIds.has(id)) {
           actions.delete(id);
+        }
+      }
+      // Backstop: even active actions are capped, so a backend that emits only
+      // `start` (no terminal) cannot grow the map without bound. Evict the
+      // oldest-started actions first.
+      if (actions.size > MAX_ACTIONS) {
+        const oldest = [...actions.values()]
+          .sort((a, b) => a.startedAt - b.startedAt)
+          .slice(0, actions.size - MAX_ACTIONS);
+        for (const action of oldest) {
+          actions.delete(action.actionId);
         }
       }
 
