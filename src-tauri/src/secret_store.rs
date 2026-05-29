@@ -322,10 +322,14 @@ impl SecretStore for StrongholdSecretStore {
             .get(name.as_bytes())
             .map_err(|_| SecretError::Backend)?
         {
-            Some(bytes) => {
-                let value = String::from_utf8(bytes).map_err(|_| SecretError::Backend)?;
-                Ok(SecretString::new(value))
-            }
+            Some(bytes) => String::from_utf8(bytes)
+                .map(SecretString::new)
+                .map_err(|e| {
+                    // Zeroize the secret bytes even on the (corruption) decode-failure
+                    // path — FromUtf8Error owns the original Vec<u8>.
+                    drop(Zeroizing::new(e.into_bytes()));
+                    SecretError::Backend
+                }),
             None => Err(SecretError::NotFound),
         }
     }
@@ -388,13 +392,24 @@ pub async fn set_openai_api_key(
     key: String,
     store: tauri::State<'_, ManagedSecretStore>,
 ) -> Result<(), String> {
-    if key.trim().is_empty() {
-        return Err("api key must not be empty".to_string());
-    }
+    let key = normalize_api_key(&key).map_err(|e| e.to_string())?;
     store
         .0
-        .save_api_key(OPENAI_KEY_NAME, SecretString::new(key))
+        .save_api_key(OPENAI_KEY_NAME, SecretString::new(key.to_string()))
         .map_err(|e| e.to_string())
+}
+
+/// Normalizes a pasted API key: trims surrounding whitespace/newlines (common
+/// when copied from a terminal or `.env`) and rejects an empty result. Storing
+/// an untrimmed value would make `has` report success while the
+/// `Authorization: Bearer <key>` header silently fails at session start.
+fn normalize_api_key(raw: &str) -> Result<&str, &'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Err("api key must not be empty")
+    } else {
+        Ok(trimmed)
+    }
 }
 
 /// Reports whether an OpenAI key is stored, **without** returning its value.
@@ -493,6 +508,17 @@ mod tests {
     fn secret_string_exposes_raw_only_via_expose() {
         let s = SecretString::new("raw".to_string());
         assert_eq!(s.expose(), "raw");
+    }
+
+    // ---- API key normalization ---------------------------------------------
+
+    #[test]
+    fn normalize_api_key_trims_and_rejects_empty() {
+        assert_eq!(normalize_api_key("  sk-abc123\n").unwrap(), "sk-abc123");
+        assert_eq!(normalize_api_key("sk-x").unwrap(), "sk-x");
+        assert_eq!(normalize_api_key("\t sk-y \r\n").unwrap(), "sk-y");
+        assert!(normalize_api_key("   ").is_err());
+        assert!(normalize_api_key("").is_err());
     }
 
     // ---- SecretError fixed messages ----------------------------------------
