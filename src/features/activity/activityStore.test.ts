@@ -1,0 +1,235 @@
+import { beforeEach, describe, expect, it } from "vitest";
+
+import {
+  EVENT_CAP,
+  selectActiveActions,
+  selectDisplayStatus,
+  useActivityStore,
+} from "./activityStore";
+import type { ApprovalRequest, ToolEvent, ToolPhase } from "./types";
+
+function ev(
+  partial: Pick<ToolEvent, "eventId" | "actionId" | "sequence" | "phase"> & Partial<ToolEvent>,
+): ToolEvent {
+  return {
+    tool: "web_search",
+    timestamp: partial.sequence * 1000,
+    displaySummary: "searching the web",
+    ...partial,
+  };
+}
+
+function approval(partial: Partial<ApprovalRequest> & { approvalId: string }): ApprovalRequest {
+  return {
+    tool: "run_command",
+    risk: "DANGER",
+    displaySummary: "run a shell command",
+    deadlineAt: 30_000,
+    sequence: 1,
+    ...partial,
+  };
+}
+
+beforeEach(() => {
+  useActivityStore.getState().reset();
+});
+
+describe("ingestToolEvent — de-duplication and ordering", () => {
+  it("ignores a duplicate eventId", () => {
+    const s = useActivityStore.getState();
+    s.ingestToolEvent(ev({ eventId: "e1", actionId: "a1", sequence: 1, phase: "start" }));
+    s.ingestToolEvent(ev({ eventId: "e1", actionId: "a1", sequence: 1, phase: "start" }));
+    expect(useActivityStore.getState().events).toHaveLength(1);
+  });
+
+  it("orders the log by sequence regardless of arrival order", () => {
+    const s = useActivityStore.getState();
+    s.ingestToolEvent(ev({ eventId: "e3", actionId: "a1", sequence: 3, phase: "progress" }));
+    s.ingestToolEvent(ev({ eventId: "e1", actionId: "a1", sequence: 1, phase: "start" }));
+    s.ingestToolEvent(ev({ eventId: "e2", actionId: "a1", sequence: 2, phase: "progress" }));
+    expect(useActivityStore.getState().events.map((e) => e.sequence)).toEqual([1, 2, 3]);
+  });
+
+  it("caps the log at EVENT_CAP, keeping the highest sequences", () => {
+    const s = useActivityStore.getState();
+    for (let i = 1; i <= EVENT_CAP + 20; i++) {
+      s.ingestToolEvent(ev({ eventId: `e${i}`, actionId: `a${i}`, sequence: i, phase: "done" }));
+    }
+    const events = useActivityStore.getState().events;
+    expect(events).toHaveLength(EVENT_CAP);
+    expect(events[0].sequence).toBe(21);
+    expect(events[events.length - 1].sequence).toBe(EVENT_CAP + 20);
+  });
+});
+
+describe("ingestToolEvent — action folding", () => {
+  it("marks an action active on start and inactive on done", () => {
+    const s = useActivityStore.getState();
+    s.ingestToolEvent(ev({ eventId: "e1", actionId: "a1", sequence: 1, phase: "start" }));
+    expect(selectActiveActions(useActivityStore.getState())).toHaveLength(1);
+    s.ingestToolEvent(ev({ eventId: "e2", actionId: "a1", sequence: 2, phase: "done" }));
+    expect(selectActiveActions(useActivityStore.getState())).toHaveLength(0);
+  });
+
+  it("does not resurrect an action when a stale start arrives after done", () => {
+    const s = useActivityStore.getState();
+    s.ingestToolEvent(ev({ eventId: "edone", actionId: "a1", sequence: 5, phase: "done" }));
+    s.ingestToolEvent(ev({ eventId: "estart", actionId: "a1", sequence: 3, phase: "start" }));
+    const action = useActivityStore.getState().actions.get("a1");
+    expect(action?.phase).toBe("done");
+    expect(selectActiveActions(useActivityStore.getState())).toHaveLength(0);
+  });
+
+  it("tracks the latest progress value", () => {
+    const s = useActivityStore.getState();
+    s.ingestToolEvent(ev({ eventId: "e1", actionId: "a1", sequence: 1, phase: "start" }));
+    s.ingestToolEvent(
+      ev({ eventId: "e2", actionId: "a1", sequence: 2, phase: "progress", progress: 0.5 }),
+    );
+    expect(useActivityStore.getState().actions.get("a1")?.progress).toBe(0.5);
+  });
+
+  it("clears progress once an action reaches a terminal phase", () => {
+    const s = useActivityStore.getState();
+    s.ingestToolEvent(ev({ eventId: "e1", actionId: "a1", sequence: 1, phase: "start" }));
+    s.ingestToolEvent(
+      ev({ eventId: "e2", actionId: "a1", sequence: 2, phase: "progress", progress: 0.6 }),
+    );
+    s.ingestToolEvent(ev({ eventId: "e3", actionId: "a1", sequence: 3, phase: "done" }));
+    expect(useActivityStore.getState().actions.get("a1")?.progress).toBeUndefined();
+  });
+
+  it("corrects startedAt when the real start arrives after done (out-of-order)", () => {
+    const s = useActivityStore.getState();
+    // done arrives first (later timestamp), then the real start (earlier).
+    s.ingestToolEvent(
+      ev({ eventId: "edone", actionId: "a1", sequence: 5, phase: "done", timestamp: 9000 }),
+    );
+    expect(useActivityStore.getState().actions.get("a1")?.startedAt).toBe(9000);
+    s.ingestToolEvent(
+      ev({ eventId: "estart", actionId: "a1", sequence: 3, phase: "start", timestamp: 1000 }),
+    );
+    const action = useActivityStore.getState().actions.get("a1");
+    expect(action?.startedAt).toBe(1000); // corrected to the true start time
+    expect(action?.phase).toBe("done"); // not resurrected
+    expect(selectActiveActions(useActivityStore.getState())).toHaveLength(0);
+  });
+
+  it("treats an equal-sequence re-emit as stale (no resurrection)", () => {
+    const s = useActivityStore.getState();
+    s.ingestToolEvent(ev({ eventId: "estart", actionId: "a1", sequence: 5, phase: "start" }));
+    s.ingestToolEvent(ev({ eventId: "edone", actionId: "a1", sequence: 6, phase: "done" }));
+    // A retry re-emits a same-sequence progress with a fresh eventId.
+    s.ingestToolEvent(ev({ eventId: "edup", actionId: "a1", sequence: 6, phase: "progress" }));
+    expect(useActivityStore.getState().actions.get("a1")?.phase).toBe("done");
+    expect(selectActiveActions(useActivityStore.getState())).toHaveLength(0);
+  });
+
+  it("prunes completed actions that have scrolled out of the event window", () => {
+    const s = useActivityStore.getState();
+    // One completed action, then EVENT_CAP newer events from other actions push
+    // its events out of the retained window.
+    s.ingestToolEvent(ev({ eventId: "old", actionId: "old", sequence: 1, phase: "done" }));
+    for (let i = 1; i <= EVENT_CAP; i++) {
+      s.ingestToolEvent(ev({ eventId: `e${i}`, actionId: `a${i}`, sequence: i + 1, phase: "done" }));
+    }
+    const { actions, seenEventIds } = useActivityStore.getState();
+    expect(actions.has("old")).toBe(false); // pruned
+    expect(actions.size).toBeLessThanOrEqual(EVENT_CAP);
+    expect(seenEventIds.size).toBeLessThanOrEqual(EVENT_CAP);
+  });
+
+  it("keeps an active action even after its start event scrolls out of the log", () => {
+    const s = useActivityStore.getState();
+    s.ingestToolEvent(ev({ eventId: "live", actionId: "live", sequence: 1, phase: "start" }));
+    for (let i = 1; i <= EVENT_CAP; i++) {
+      s.ingestToolEvent(ev({ eventId: `e${i}`, actionId: `a${i}`, sequence: i + 1, phase: "done" }));
+    }
+    expect(useActivityStore.getState().actions.has("live")).toBe(true);
+    expect(selectActiveActions(useActivityStore.getState())).toHaveLength(1);
+  });
+});
+
+describe("selectDisplayStatus — derived state machine", () => {
+  let statusSeq = 0;
+  const setConn = (state: Parameters<typeof selectDisplayStatus>[0]["connState"]) =>
+    useActivityStore.getState().setSessionStatus({ state, sequence: ++statusSeq });
+
+  beforeEach(() => {
+    statusSeq = 0;
+  });
+
+  it("idle / connecting map directly", () => {
+    setConn("idle");
+    expect(selectDisplayStatus(useActivityStore.getState())).toBe("idle");
+    setConn("connecting");
+    expect(selectDisplayStatus(useActivityStore.getState())).toBe("connecting");
+  });
+
+  it("connected with no active tool = conversing", () => {
+    setConn("connected");
+    expect(selectDisplayStatus(useActivityStore.getState())).toBe("conversing");
+  });
+
+  it("connected with an active tool = working", () => {
+    setConn("connected");
+    useActivityStore
+      .getState()
+      .ingestToolEvent(ev({ eventId: "e1", actionId: "a1", sequence: 1, phase: "start" }));
+    expect(selectDisplayStatus(useActivityStore.getState())).toBe("working");
+  });
+
+  it("error is shown and is sticky until a newer connection state arrives", () => {
+    useActivityStore.getState().setSessionStatus({ state: "error", error: "boom", sequence: 10 });
+    expect(selectDisplayStatus(useActivityStore.getState())).toBe("error");
+    expect(useActivityStore.getState().lastError).toBe("boom");
+    useActivityStore.getState().setSessionStatus({ state: "connecting", sequence: 11 });
+    expect(selectDisplayStatus(useActivityStore.getState())).toBe("connecting");
+    expect(useActivityStore.getState().lastError).toBeNull();
+  });
+
+  it("ignores a stale status event (older sequence cannot clear a newer error)", () => {
+    useActivityStore.getState().setSessionStatus({ state: "error", error: "down", sequence: 10 });
+    // A late 'connected' with a LOWER sequence must not revert the error.
+    useActivityStore.getState().setSessionStatus({ state: "connected", sequence: 9 });
+    expect(selectDisplayStatus(useActivityStore.getState())).toBe("error");
+    expect(useActivityStore.getState().lastError).toBe("down");
+  });
+});
+
+describe("approval queue — FIFO", () => {
+  it("enqueues and dequeues by approvalId in order", () => {
+    const s = useActivityStore.getState();
+    s.enqueueApproval(approval({ approvalId: "first" }));
+    s.enqueueApproval(approval({ approvalId: "second" }));
+    expect(useActivityStore.getState().approvalQueue.map((a) => a.approvalId)).toEqual([
+      "first",
+      "second",
+    ]);
+    s.dequeueApproval("first");
+    expect(useActivityStore.getState().approvalQueue.map((a) => a.approvalId)).toEqual(["second"]);
+  });
+
+  it("ignores a duplicate approvalId", () => {
+    const s = useActivityStore.getState();
+    s.enqueueApproval(approval({ approvalId: "x" }));
+    s.enqueueApproval(approval({ approvalId: "x" }));
+    expect(useActivityStore.getState().approvalQueue).toHaveLength(1);
+  });
+});
+
+describe("reset", () => {
+  it("clears events, actions, approvals and status", () => {
+    const s = useActivityStore.getState();
+    s.ingestToolEvent(ev({ eventId: "e1", actionId: "a1", sequence: 1, phase: "start" }));
+    s.enqueueApproval(approval({ approvalId: "a" }));
+    s.setSessionStatus({ state: "connected", sequence: 1 });
+    s.reset();
+    const after = useActivityStore.getState();
+    expect(after.events).toHaveLength(0);
+    expect(after.actions.size).toBe(0);
+    expect(after.approvalQueue).toHaveLength(0);
+    expect(after.connState).toBe("idle");
+    expect(after.lastError).toBeNull();
+  });
+});

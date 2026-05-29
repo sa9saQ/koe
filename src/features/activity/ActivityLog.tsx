@@ -1,0 +1,125 @@
+// The operator console — koe's primary differentiator: a single panel that
+// shows, at a glance, what the assistant is doing right now. Status indicator,
+// the live actions (with elapsed time + progress), and the recent event log.
+
+import { useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
+
+import { selectActiveActions, selectDisplayStatus, useActivityStore } from "./activityStore";
+import type { ActionState, DisplayStatus, ToolEvent } from "./types";
+import "./ActivityLog.css";
+
+/** Japanese label + dot tone for each derived status. */
+const STATUS_META: Record<DisplayStatus, { label: string; tone: string }> = {
+  idle: { label: "待機", tone: "idle" },
+  connecting: { label: "準備", tone: "connecting" },
+  conversing: { label: "会話", tone: "conversing" },
+  working: { label: "作業", tone: "working" },
+  error: { label: "エラー", tone: "error" },
+};
+
+/** A clock that ticks once a second to refresh elapsed times — only while needed. */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+function elapsedLabel(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m${(s % 60).toString().padStart(2, "0")}s`;
+}
+
+function LiveAction({ action, now }: { action: ActionState; now: number }) {
+  const pct = action.progress != null ? Math.round(action.progress * 100) : null;
+  return (
+    <li className="koe-live-action">
+      <span className="koe-spinner" aria-hidden />
+      <span className="koe-live-tool">{action.tool}</span>
+      <span className="koe-live-summary">{action.displaySummary}</span>
+      {pct != null && (
+        <span className="koe-live-progress" role="progressbar" aria-valuenow={pct}>
+          {pct}%
+        </span>
+      )}
+      <span className="koe-live-elapsed">{elapsedLabel(now - action.startedAt)}</span>
+    </li>
+  );
+}
+
+const PHASE_GLYPH: Record<ToolEvent["phase"], string> = {
+  start: "▶",
+  progress: "…",
+  done: "✓",
+  error: "✕",
+};
+
+function LogRow({ event }: { event: ToolEvent }) {
+  return (
+    <li className={`koe-log-row koe-phase-${event.phase}`}>
+      <span className="koe-log-glyph" aria-hidden>
+        {PHASE_GLYPH[event.phase]}
+      </span>
+      <span className="koe-log-tool">{event.tool}</span>
+      <span className="koe-log-summary">{event.displaySummary}</span>
+    </li>
+  );
+}
+
+export function ActivityLog() {
+  const status = useActivityStore(selectDisplayStatus);
+  // `selectActiveActions` builds a fresh array; `useShallow` compares its
+  // contents so the component doesn't re-render (and loop) every tick.
+  const active = useActivityStore(useShallow(selectActiveActions));
+  const events = useActivityStore((s) => s.events);
+  const pendingApprovals = useActivityStore((s) => s.approvalQueue.length);
+  const lastError = useActivityStore((s) => s.lastError);
+
+  const now = useNow(active.length > 0);
+  const meta = STATUS_META[status];
+  // Newest first in the visible log.
+  const recent = [...events].reverse();
+
+  return (
+    <section className="koe-console" aria-label="アクティビティ">
+      <header className="koe-console-head">
+        <span className={`koe-status-dot koe-tone-${meta.tone}`} aria-hidden />
+        <span className="koe-status-label">{meta.label}</span>
+        {pendingApprovals > 0 && (
+          <span className="koe-approval-badge">承認待ち {pendingApprovals}</span>
+        )}
+      </header>
+
+      {status === "error" && lastError && (
+        <p className="koe-error-line" role="alert">
+          {lastError}
+        </p>
+      )}
+
+      <div className="koe-live" aria-live="polite">
+        {active.length === 0 ? (
+          <p className="koe-live-empty">いまは静かです</p>
+        ) : (
+          <ul className="koe-live-list">
+            {active.map((a) => (
+              <LiveAction key={a.actionId} action={a} now={now} />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <ol className="koe-log" aria-label="直近の動作">
+        {recent.length === 0 ? (
+          <li className="koe-log-empty">まだ記録はありません</li>
+        ) : (
+          recent.map((e) => <LogRow key={e.eventId} event={e} />)
+        )}
+      </ol>
+    </section>
+  );
+}

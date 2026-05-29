@@ -1,0 +1,225 @@
+/* Operator console panel. Radii vary by element on purpose (anti-AI-smell). */
+
+.koe-console {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.koe-console-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.koe-status-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--tone-idle);
+  box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent);
+}
+.koe-tone-idle {
+  color: var(--tone-idle);
+  background: var(--tone-idle);
+}
+.koe-tone-connecting {
+  color: var(--tone-connecting);
+  background: var(--tone-connecting);
+  animation: koe-pulse 1.3s var(--ease-spring) infinite;
+}
+.koe-tone-conversing {
+  color: var(--tone-conversing);
+  background: var(--tone-conversing);
+}
+.koe-tone-working {
+  color: var(--tone-working);
+  background: var(--tone-working);
+  animation: koe-pulse 1s var(--ease-spring) infinite;
+}
+.koe-tone-error {
+  color: var(--tone-error);
+  background: var(--tone-error);
+}
+
+.koe-status-label {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.koe-approval-badge {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a1d24;
+  background: var(--tone-connecting);
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
+.koe-error-line {
+  margin: 0;
+  font-size: 13px;
+  color: var(--tone-error);
+  background: color-mix(in srgb, var(--tone-error) 12%, transparent);
+  border-left: 3px solid var(--tone-error);
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+/* --- LIVE --- */
+.koe-live {
+  min-height: 44px;
+}
+.koe-live-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  font-style: italic;
+}
+.koe-live-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.koe-live-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  animation: koe-rise var(--dur-enter) var(--ease-decel);
+}
+.koe-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: koe-spin 0.7s linear infinite;
+  flex: none;
+}
+.koe-live-tool {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.koe-live-summary {
+  flex: 1;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.koe-live-progress {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--muted);
+}
+.koe-live-elapsed {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- LOG --- */
+.koe-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  max-height: 46vh;
+}
+.koe-log-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+.koe-log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.koe-log-row:nth-child(odd) {
+  background: color-mix(in srgb, var(--panel-2) 50%, transparent);
+}
+.koe-log-glyph {
+  font-family: var(--font-mono);
+  flex: none;
+  width: 1.2em;
+  text-align: center;
+}
+.koe-phase-done .koe-log-glyph {
+  color: var(--tone-working);
+}
+.koe-phase-error .koe-log-glyph {
+  color: var(--tone-error);
+}
+.koe-phase-start .koe-log-glyph,
+.koe-phase-progress .koe-log-glyph {
+  color: var(--accent);
+}
+.koe-log-tool {
+  font-family: var(--font-mono);
+  color: var(--muted);
+  flex: none;
+}
+.koe-log-summary {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes koe-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes koe-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes koe-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .koe-spinner,
+  .koe-tone-connecting,
+  .koe-tone-working,
+  .koe-live-action {
+    animation: none;
+  }
+}

@@ -1,0 +1,67 @@
+import { act, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it } from "vitest";
+
+import { ActivityLog } from "./ActivityLog";
+import { useActivityStore } from "./activityStore";
+import type { ToolEvent } from "./types";
+
+function ev(partial: Pick<ToolEvent, "eventId" | "actionId" | "sequence" | "phase">): ToolEvent {
+  return {
+    tool: "web_search",
+    timestamp: 1000,
+    displaySummary: "searching the web",
+    ...partial,
+  };
+}
+
+beforeEach(() => {
+  useActivityStore.getState().reset();
+});
+
+describe("ActivityLog", () => {
+  it("shows the idle status and empty states by default", () => {
+    render(<ActivityLog />);
+    expect(screen.getByText("待機")).toBeInTheDocument();
+    expect(screen.getByText("いまは静かです")).toBeInTheDocument();
+    expect(screen.getByText("まだ記録はありません")).toBeInTheDocument();
+  });
+
+  it("renders a live action and the working status while a tool runs", () => {
+    render(<ActivityLog />);
+    act(() => {
+      useActivityStore.getState().setSessionStatus({ state: "connected", sequence: 1 });
+      useActivityStore
+        .getState()
+        .ingestToolEvent(ev({ eventId: "e1", actionId: "a1", sequence: 1, phase: "start" }));
+    });
+    expect(screen.getByText("作業")).toBeInTheDocument();
+    // tool name appears in both the live row and the log row.
+    expect(screen.getAllByText("web_search").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows the pending-approval badge", () => {
+    render(<ActivityLog />);
+    act(() => {
+      useActivityStore.getState().enqueueApproval({
+        approvalId: "ap1",
+        tool: "run_command",
+        risk: "DANGER",
+        displaySummary: "danger op",
+        deadlineAt: 30_000,
+        sequence: 1,
+      });
+    });
+    expect(screen.getByText(/承認待ち 1/)).toBeInTheDocument();
+  });
+
+  it("surfaces the error message in error state", () => {
+    render(<ActivityLog />);
+    act(() => {
+      useActivityStore
+        .getState()
+        .setSessionStatus({ state: "error", error: "接続に失敗しました", sequence: 1 });
+    });
+    expect(screen.getByText("エラー")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("接続に失敗しました");
+  });
+});
