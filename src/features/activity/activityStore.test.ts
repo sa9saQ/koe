@@ -150,6 +150,20 @@ describe("ingestToolEvent — action folding", () => {
     expect(selectActiveActions(useActivityStore.getState())).toHaveLength(1);
   });
 
+  it("does not resurrect an action from a replayed event older than the window", () => {
+    const s = useActivityStore.getState();
+    // Fill the window with newer events.
+    for (let i = 1; i <= EVENT_CAP; i++) {
+      s.ingestToolEvent(
+        ev({ eventId: `e${i}`, actionId: `a${i}`, sequence: i + 100, phase: "done" }),
+      );
+    }
+    // Replay an OLD start (distinct eventId, sequence below the window).
+    s.ingestToolEvent(ev({ eventId: "ancient", actionId: "ancient", sequence: 1, phase: "start" }));
+    expect(useActivityStore.getState().actions.has("ancient")).toBe(false);
+    expect(selectActiveActions(useActivityStore.getState())).toHaveLength(0);
+  });
+
   it("caps the action map even when a backend only emits start events", () => {
     const s = useActivityStore.getState();
     const total = MAX_ACTIONS + 50;

@@ -96,53 +96,63 @@ export const useActivityStore = create<ActivityState>((set) => ({
         events.splice(0, events.length - EVENT_CAP);
       }
 
-      // Fold into the per-action view.
-      const actions = new Map(state.actions);
-      const existing = actions.get(event.actionId);
-      if (!existing) {
-        actions.set(event.actionId, {
-          actionId: event.actionId,
-          tool: event.tool,
-          phase: event.phase,
-          startedAt: event.timestamp,
-          updatedAt: event.timestamp,
-          displaySummary: event.displaySummary,
-          detail: event.detail,
-          progress: event.progress,
-          lastSequence: event.sequence,
-          hasSeenStart: event.phase === "start",
-        });
-      } else if (event.phase === "start" && !existing.hasSeenStart) {
-        // A real `start` arrived after a done/error (out-of-order delivery):
-        // correct startedAt to the true start time WITHOUT changing the phase,
-        // so the action is not resurrected as active.
-        actions.set(event.actionId, {
-          ...existing,
-          startedAt: event.timestamp,
-          hasSeenStart: true,
-        });
-      } else if (event.sequence > existing.lastSequence) {
-        // Strictly newer (within this action) — advance. `>` not `>=` so a
-        // re-emitted same-sequence event cannot resurrect a finished action.
-        actions.set(event.actionId, {
-          ...existing,
-          tool: event.tool,
-          phase: event.phase,
-          updatedAt: event.timestamp,
-          displaySummary: event.displaySummary,
-          detail: event.detail ?? existing.detail,
-          // Clear progress once terminal so a completed action keeps no stale %.
-          progress: isTerminalPhase(event.phase) ? undefined : (event.progress ?? existing.progress),
-          lastSequence: event.sequence,
-        });
-      }
-      // else: stale within this action — keep the newer phase.
-
-      // Bound memory: dedup set tracks only the retained window; completed
-      // actions that have scrolled out of the log are dropped (active actions
-      // are always kept, even if their start event scrolled off).
+      // The dedup set tracks only the retained window (bounded memory), so a
+      // genuinely old event can slip past the dedup check and be re-ingested.
       const retainedEventIds = new Set(events.map((e) => e.eventId));
       const retainedActionIds = new Set(events.map((e) => e.actionId));
+
+      // Fold into the per-action view — but ONLY for events recent enough to
+      // remain in the visible window. An event so old it was immediately evicted
+      // must not create or resurrect an action (which would otherwise leave
+      // phantom LIVE work on screen forever, since no terminal event follows a
+      // replayed old event).
+      const actions = new Map(state.actions);
+      if (retainedEventIds.has(event.eventId)) {
+        const existing = actions.get(event.actionId);
+        if (!existing) {
+          actions.set(event.actionId, {
+            actionId: event.actionId,
+            tool: event.tool,
+            phase: event.phase,
+            startedAt: event.timestamp,
+            updatedAt: event.timestamp,
+            displaySummary: event.displaySummary,
+            detail: event.detail,
+            progress: event.progress,
+            lastSequence: event.sequence,
+            hasSeenStart: event.phase === "start",
+          });
+        } else if (event.phase === "start" && !existing.hasSeenStart) {
+          // A real `start` arrived after a done/error (out-of-order delivery):
+          // correct startedAt to the true start time WITHOUT changing the phase,
+          // so the action is not resurrected as active.
+          actions.set(event.actionId, {
+            ...existing,
+            startedAt: event.timestamp,
+            hasSeenStart: true,
+          });
+        } else if (event.sequence > existing.lastSequence) {
+          // Strictly newer (within this action) — advance. `>` not `>=` so a
+          // re-emitted same-sequence event cannot resurrect a finished action.
+          actions.set(event.actionId, {
+            ...existing,
+            tool: event.tool,
+            phase: event.phase,
+            updatedAt: event.timestamp,
+            displaySummary: event.displaySummary,
+            detail: event.detail ?? existing.detail,
+            // Clear progress once terminal so a completed action keeps no stale %.
+            progress: isTerminalPhase(event.phase)
+              ? undefined
+              : (event.progress ?? existing.progress),
+            lastSequence: event.sequence,
+          });
+        }
+        // else: stale within this action — keep the newer phase.
+      }
+
+      // Bound memory: completed actions that have scrolled out of the log are
+      // dropped (active actions are always kept, even if their start scrolled off).
       for (const [id, action] of actions) {
         if (!isActivePhase(action.phase) && !retainedActionIds.has(id)) {
           actions.delete(id);
