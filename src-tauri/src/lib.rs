@@ -2,6 +2,7 @@ mod approval_gate;
 mod cost_tracker;
 mod events;
 mod secret_store;
+mod settings_store;
 mod storage;
 mod validation;
 
@@ -15,17 +16,15 @@ use secret_store::{
     delete_openai_api_key, has_openai_api_key, set_openai_api_key, KeychainPassword,
     ManagedSecretStore, StrongholdSecretStore,
 };
+use settings_store::{
+    complete_onboarding, get_app_settings, save_budget_config, set_recorder_adapter,
+    JsonSettingsStore, ManagedSettings,
+};
 use storage::{adapter::ManagedRecorder, sqlite::SqliteAdapter};
 
 /// Keychain identifiers for the Stronghold snapshot decryption key.
 const KEYCHAIN_SERVICE: &str = "com.zsaku.koe";
 const KEYCHAIN_SNAPSHOT_ACCOUNT: &str = "stronghold-snapshot-key";
-
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -64,14 +63,24 @@ pub fn run() {
             let sequence = Arc::new(SequenceCounter::new());
             app.manage(ManagedSequenceCounter(Arc::clone(&sequence)));
             app.manage(ManagedApprovalGate(Arc::new(ApprovalGate::new(sequence))));
+
+            // Settings persistence (koe-200): onboarding flag + budget config +
+            // recorder adapter choice. Rust-owned JSON; no WebView file surface.
+            let settings_path = data_dir.join("koe-settings.json");
+            let settings = JsonSettingsStore::new(settings_path);
+            app.manage(ManagedSettings(Arc::new(settings)));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
             set_openai_api_key,
             has_openai_api_key,
             delete_openai_api_key,
-            resolve_tool_approval
+            resolve_tool_approval,
+            get_app_settings,
+            complete_onboarding,
+            save_budget_config,
+            set_recorder_adapter,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
