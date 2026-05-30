@@ -28,6 +28,11 @@ tauri-plugin-stronghold = "2"
 iota_stronghold = "2"
 zeroize = "1"
 getrandom = "0.2"
+# Recorder storage (koe-nnk). rusqlite owns the SQLite DB entirely in Rust;
+# `bundled` compiles SQLite in (no system lib dependency -> reproducible Windows
+# builds). tauri-plugin-sql is intentionally NOT used: it would expose a SQL
+# surface to the WebView, the same risk the disabled stronghold plugin avoids.
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 # OS keychain for the 32-byte Stronghold snapshot key. Platform-split so the
 # crate compiles both on the Windows target and in the WSL/Linux dev box used
