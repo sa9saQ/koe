@@ -1,5 +1,6 @@
 mod cost_tracker;
 mod secret_store;
+mod storage;
 
 use std::sync::Arc;
 
@@ -9,6 +10,7 @@ use secret_store::{
     delete_openai_api_key, has_openai_api_key, set_openai_api_key, KeychainPassword,
     ManagedSecretStore, StrongholdSecretStore,
 };
+use storage::{adapter::ManagedRecorder, sqlite::SqliteAdapter};
 
 /// Keychain identifiers for the Stronghold snapshot decryption key.
 const KEYCHAIN_SERVICE: &str = "com.zsaku.koe";
@@ -41,6 +43,13 @@ pub fn run() {
             ));
             let store = StrongholdSecretStore::new(snapshot_path, password);
             app.manage(ManagedSecretStore(Arc::new(store)));
+
+            // Recorder storage (koe-nnk): notes / conversation log / cost
+            // snapshots in a Rust-owned SQLite DB beside the secret snapshot.
+            // No WebView SQL surface; consumers (write_note tool koe-s7i,
+            // session_manager koe-e3m) reach it via tauri::State<ManagedRecorder>.
+            let recorder = SqliteAdapter::open(&data_dir.join("koe.db"))?;
+            app.manage(ManagedRecorder(Arc::new(recorder)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
