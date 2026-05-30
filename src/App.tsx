@@ -1,21 +1,46 @@
+import { useState } from "react";
+
 import { ActivityLog } from "./features/activity/ActivityLog";
 import { ApprovalModal } from "./features/activity/ApprovalModal";
 import { DevMockEmitter } from "./features/activity/DevMockEmitter";
 import { useActivityEvents } from "./features/activity/useActivityEvents";
+import { OnboardingGate } from "./features/settings/OnboardingGate";
+import { SettingsPanel } from "./features/settings/SettingsPanel";
 import "./App.css";
 
-function App() {
+function ActivityConsole() {
   // Subscribe to the backend tool-event / approval / status streams for the
   // app's lifetime.
   useActivityEvents();
 
+  const [showSettings, setShowSettings] = useState(false);
+
   return (
     <main className="koe-app">
-      <h1 className="koe-app-title">koe — activity</h1>
+      <div className="koe-app-header">
+        <h1 className="koe-app-title">koe — activity</h1>
+        <button
+          type="button"
+          className="koe-btn koe-btn-icon"
+          onClick={() => setShowSettings((v) => !v)}
+          aria-label="設定を開く"
+        >
+          設定
+        </button>
+      </div>
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
       <ActivityLog />
       {import.meta.env.DEV && <DevMockEmitter />}
       <ApprovalModal />
     </main>
+  );
+}
+
+function App() {
+  return (
+    <OnboardingGate>
+      <ActivityConsole />
+    </OnboardingGate>
   );
 }
 

@@ -14,10 +14,17 @@ vi.mock("@tauri-apps/api/core", () => ({
 import {
   COMMAND,
   EVENT,
+  completeOnboarding,
+  deleteOpenaiApiKey,
+  getAppSettings,
+  hasOpenaiApiKey,
   onApprovalRequired,
   onSessionStatus,
   onToolEvent,
   resolveToolApproval,
+  saveBudgetConfig,
+  setOpenaiApiKey,
+  setRecorderAdapter,
 } from "./ipc";
 import type { ApprovalRequest, SessionStatusEvent, ToolEvent } from "../../features/activity/types";
 
@@ -92,3 +99,77 @@ describe("resolveToolApproval", () => {
 // Guard the SessionStatusEvent shape is referenced (compile-time contract).
 const _shape: SessionStatusEvent = { state: "idle", sequence: 0 };
 void _shape;
+
+// ---------------------------------------------------------------------------
+// Settings + secret-store command wrappers
+// ---------------------------------------------------------------------------
+
+describe("getAppSettings", () => {
+  it("invokes get_app_settings with no args and returns the result", async () => {
+    const fakeSettings = { onboarding_completed: true, budget: { enabled: false, monthly_limit_nanodollars: 0 }, recorder_adapter: "sqlite" };
+    invoke.mockResolvedValueOnce(fakeSettings);
+    const result = await getAppSettings();
+    expect(invoke).toHaveBeenCalledWith(COMMAND.getAppSettings);
+    expect(result).toEqual(fakeSettings);
+  });
+});
+
+describe("completeOnboarding", () => {
+  it("invokes complete_onboarding with camelCase args", async () => {
+    await completeOnboarding(true, 10.0, "sqlite");
+    expect(invoke).toHaveBeenCalledWith(COMMAND.completeOnboarding, {
+      enabled: true,
+      monthlyLimitUsd: 10.0,
+      recorderAdapter: "sqlite",
+    });
+  });
+
+  it("passes null monthlyLimitUsd for unlimited", async () => {
+    await completeOnboarding(false, null, "sqlite");
+    expect(invoke).toHaveBeenCalledWith(COMMAND.completeOnboarding, {
+      enabled: false,
+      monthlyLimitUsd: null,
+      recorderAdapter: "sqlite",
+    });
+  });
+});
+
+describe("saveBudgetConfig", () => {
+  it("invokes save_budget_config with enabled + monthlyLimitUsd", async () => {
+    await saveBudgetConfig(true, 20.0);
+    expect(invoke).toHaveBeenCalledWith(COMMAND.saveBudgetConfig, {
+      enabled: true,
+      monthlyLimitUsd: 20.0,
+    });
+  });
+});
+
+describe("setRecorderAdapter", () => {
+  it("invokes set_recorder_adapter with {name}", async () => {
+    await setRecorderAdapter("sqlite");
+    expect(invoke).toHaveBeenCalledWith(COMMAND.setRecorderAdapter, { name: "sqlite" });
+  });
+});
+
+describe("setOpenaiApiKey", () => {
+  it("invokes set_openai_api_key with {key}", async () => {
+    await setOpenaiApiKey("sk-abc123");
+    expect(invoke).toHaveBeenCalledWith(COMMAND.setOpenaiApiKey, { key: "sk-abc123" });
+  });
+});
+
+describe("hasOpenaiApiKey", () => {
+  it("invokes has_openai_api_key and returns the boolean", async () => {
+    invoke.mockResolvedValueOnce(true);
+    const result = await hasOpenaiApiKey();
+    expect(invoke).toHaveBeenCalledWith(COMMAND.hasOpenaiApiKey);
+    expect(result).toBe(true);
+  });
+});
+
+describe("deleteOpenaiApiKey", () => {
+  it("invokes delete_openai_api_key with no args", async () => {
+    await deleteOpenaiApiKey();
+    expect(invoke).toHaveBeenCalledWith(COMMAND.deleteOpenaiApiKey);
+  });
+});
